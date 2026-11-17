@@ -196,6 +196,7 @@ table.t td.num,table.t th.num{width:1%;text-align:right;color:var(--muted)}
 
 .cons-bar{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}.cons-m{gap:4px;align-items:center}.cons-m .btn.on{background:var(--accent);color:#fff;border-color:var(--accent)}.cons-a{gap:8px;margin-top:6px;align-items:center}.cons-h{margin-top:4px}.ed-es{display:flex}
 .ctl-tight .maplibregl-ctrl-scale{display:none}
+.dbtag{display:inline-block;padding:2px 8px;margin-right:4px;border-radius:99px;font-size:12px;font-weight:700;background:var(--panel-2);border:1px solid var(--line)}.dbtag.supa{background:#dcfce7;color:#166534;border-color:#86efac}
 
 </style>
 </head>
@@ -791,6 +792,7 @@ var I18N_EN = {
   'Password baru (min 8, huruf & angka)': 'New password (min. 8, letters & digits)', 'Ulangi password baru': 'Repeat new password', 'Semua sesi akan dicabut setelah password diganti.': 'All sessions will be revoked after the password is changed.',
   'Foto profil diperbarui.': 'Profile photo updated.', 'Konfirmasi password tidak sama.': 'Password confirmation does not match.', 'Password diganti. Silakan login kembali.': 'Password changed. Please sign in again.',
   // ---- tentang
+  'Database': 'Database', 'Penyimpanan browser (demo)': 'Browser storage (demo)', 'PostgreSQL + PostGIS': 'PostgreSQL + PostGIS', '✓ Server & database OK': '✓ Server & database OK',
   'Informasi aplikasi': 'App information', 'Aplikasi': 'App', 'Versi klien': 'Client version', 'Versi server': 'Server version', 'CRS data': 'Data CRS', 'Cek kesehatan server': 'Check server health',
   'Reset data demo': 'Reset demo data', 'Reset demo': 'Reset demo', 'Komponen pihak ketiga': 'Third-party components', 'Universal Mobile Mapping GIS — Edisi Apps Script': 'Universal Mobile Mapping GIS — Apps Script Edition',
   'DEMO (data di browser)': 'DEMO (data in the browser)', 'Apps Script (HtmlService)': 'Apps Script (HtmlService)', 'PWA (GitHub Pages)': 'PWA (GitHub Pages)', 'EPSG:4326 (WGS84)': 'EPSG:4326 (WGS84)',
@@ -915,6 +917,9 @@ var I18N_EN = {
 
 /** Pola untuk teks dinamis (angka, nama). Urutan penting: yang lebih spesifik di atas. */
 var I18N_EN_PATTERNS = [
+  [/^Tenant: (.+) · paket (.+) · (\S+)( · kunci …\w+)?$/, function (_, a, b, c, d) { return 'Tenant: ' + a + ' · plan ' + b + ' · ' + c + (d ? d.replace('kunci', 'key') : ''); }],
+  [/^✗ Database bermasalah: (.*)$/, '✗ Database problem: $1'],
+  [/^Terhubung: (.+) v(\S+) · DB (Supabase|Google Sheets) (OK|bermasalah)$/, function (_, a, v, d, o) { return 'Connected: ' + a + ' v' + v + ' · DB ' + d + ' ' + (o === 'OK' ? 'OK' : 'problem'); }],
   [/^Hanya fitur terpilih \((\d+)\)$/, 'Selected features only ($1)'], [/^Hasil pemeriksaan (\d+) fitur:$/, 'Check result for $1 features:'],
   [/^Dirapikan: (\d+) fitur diubah(?:, (\d+) dilewati \(hasil tidak valid\))? — periksa lalu Simpan perubahan \(Undo tersedia\)\.$/, function (_, a, b) { return 'Cleaned: ' + a + ' features changed' + (b ? ', ' + b + ' skipped (invalid result)' : '') + ' — review, then Save edits (Undo available).'; }],
   [/^\((\d+) vertex\)$/, '($1 vertices)'],
@@ -1017,7 +1022,18 @@ var LEGAL_EN = {
  * Mode: 'gas' (HtmlService/google.script.run), 'remote' (PWA GitHub Pages -> fetch Web App), 'demo' (backend emulasi di browser).
  */
 'use strict';
-var APP_VERSION = '1.10.0', APP_BUILD = '2026-11-17';
+var APP_VERSION = '1.10.2', APP_BUILD = '2026-11-17';
+/** Label database untuk layar Tentang: Google Sheets / Supabase (+ project & tenant untuk admin). */
+function dbLabel(d) {
+  if (CONFIG.MODE === 'demo') return 'Penyimpanan browser (demo)';
+  if (!d || !d.backend) return '-';
+  if (d.backend !== 'supabase') return '<span class="dbtag">Google Sheets</span>';
+  var x = '<span class="dbtag supa">Supabase</span> PostgreSQL + PostGIS';
+  if (d.project) x += '<div class="small muted">Project: ' + esc(d.project) + '</div>';
+  if (d.tenant) x += '<div class="small muted">Tenant: ' + esc(d.tenant) + ' · paket ' + esc(d.plan || '-') + ' · ' + esc(d.status || '-') + (d.key_hint ? ' · kunci …' + esc(d.key_hint) : '') + '</div>';
+  if (d.tenant_error) x += '<div class="small" style="color:var(--danger,#dc2626)">' + esc(d.tenant_error) + '</div>';
+  return x;
+}
 var S = { token: '', user: null, org: null, perms: [], settings: {}, license: {}, projects: [], layers: [], users: [],
   features: new Map(), serverVer: {}, projectId: '', layerId: '', hiddenLayers: new Set(), online: navigator.onLine, tab: 'map', rendered: {} };
 
@@ -2911,13 +2927,22 @@ var Tabs = {
   },
   about: function () {
     var el = $('[data-tab=about]');
-    el.innerHTML = '<div class="tab-h"><h2>Tentang &amp; Legal</h2></div><div class="grid2"><div class="card"><h3>Informasi aplikasi</h3><table class="t"><tr><th>Aplikasi</th><td>Universal Mobile Mapping GIS — Edisi Apps Script</td></tr><tr><th>Versi klien</th><td>' + APP_VERSION + ' (build ' + APP_BUILD + ')</td></tr><tr><th>Versi server</th><td id="ab-sv">' + esc(S.serverApp && S.serverApp.version ? S.serverApp.version + ' (' + S.serverApp.build + ')' : '-') + '</td></tr><tr><th>Mode</th><td>' + ({ gas: 'Apps Script (HtmlService)', remote: 'PWA (GitHub Pages)', demo: 'DEMO (data di browser)' }[CONFIG.MODE]) + '</td></tr><tr><th>Lisensi</th><td>' + esc(S.license.label || '-') + (S.license.exp ? ' · s/d ' + esc(S.license.exp) : '') + '</td></tr><tr><th>CRS data</th><td>EPSG:4326 (WGS84)</td></tr></table><div class="row wrap" style="margin-top:10px"><button class="btn sm" id="ab-health">Cek kesehatan server</button>' + (CONFIG.MODE === 'demo' ? '<button class="btn sm danger" id="ab-reset">Reset data demo</button>' : '') + '</div><div id="ab-h" class="small mono" style="margin-top:8px"></div></div>' +
+    el.innerHTML = '<div class="tab-h"><h2>Tentang &amp; Legal</h2></div><div class="grid2"><div class="card"><h3>Informasi aplikasi</h3><table class="t"><tr><th>Aplikasi</th><td>Universal Mobile Mapping GIS — Edisi Apps Script</td></tr><tr><th>Versi klien</th><td>' + APP_VERSION + ' (build ' + APP_BUILD + ')</td></tr><tr><th>Versi server</th><td id="ab-sv">' + esc(S.serverApp && S.serverApp.version ? S.serverApp.version + ' (' + S.serverApp.build + ')' : '-') + '</td></tr><tr><th>Database</th><td id="ab-db">' + dbLabel(S.serverApp && S.serverApp.db) + '</td></tr><tr><th>Mode</th><td>' + ({ gas: 'Apps Script (HtmlService)', remote: 'PWA (GitHub Pages)', demo: 'DEMO (data di browser)' }[CONFIG.MODE]) + '</td></tr><tr><th>Lisensi</th><td>' + esc(S.license.label || '-') + (S.license.exp ? ' · s/d ' + esc(S.license.exp) : '') + '</td></tr><tr><th>CRS data</th><td>EPSG:4326 (WGS84)</td></tr></table><div class="row wrap" style="margin-top:10px"><button class="btn sm" id="ab-health">Cek kesehatan server</button>' + (CONFIG.MODE === 'demo' ? '<button class="btn sm danger" id="ab-reset">Reset data demo</button>' : '') + '</div><div id="ab-h" class="small mono" style="margin-top:8px"></div></div>' +
       (CONFIG.MODE === 'demo' ? '<div class="card" style="border-color:var(--warn)"><h3>Batasan versi demo</h3><ul class="small"><li>Data hanya di tab ini — <b>hilang saat tab/aplikasi ditutup</b> dan direset otomatis setiap ' + Demo.LIMIT.sessionMin + ' menit (sisa: ' + Math.ceil(Demo.left() / 60000) + ' menit).</li><li>1 proyek; maks. ' + (S.license.max_layers || 6) + ' layer, ' + (S.license.max_features || 60) + ' data, 2 foto per data.</li><li>Ekspor GeoJSON/CSV/KML/SHP dinonaktifkan; impor maks. ' + Demo.LIMIT.importRows + ' baris.</li><li>Cetak PDF resolusi draft (' + Demo.LIMIT.printDpi + ' dpi) dengan watermark DEMO.</li><li>Tidak dapat menambah pengguna, mengganti password, mengaktifkan lisensi, atau mengubah judul/logo.</li><li>Tanpa server & sinkronisasi multi-perangkat (semua emulasi di browser).</li></ul></div>' : '') +
       (CONFIG.MODE !== 'demo' ? '<div class="card"><h3>Pasang di HP / PC</h3><p class="small muted">Versi PWA dapat dipasang seperti aplikasi: ikon di layar utama, layar penuh, offline.</p><div class="row wrap"><button class="btn sm" data-install>📲 Pasang aplikasi</button><button class="btn sm" id="ab-inst-chk">Periksa kesiapan instalasi</button></div>' + (Install.standalone() ? '<p class="small" style="color:var(--ok)">✅ Aplikasi sedang berjalan sebagai aplikasi terpasang.</p>' : '') + '</div>' : '') +
       '<div class="card"><h3>Komponen pihak ketiga</h3><ul class="small"><li>MapLibre GL JS 4.7.1 — BSD-3-Clause</li><li>PMTiles (protomaps) 3.2.1 — BSD-3-Clause</li><li>shpjs 6.2.0, geotiff.js 2.1.3, proj4js 2.15.0, pdf-lib 1.17.1, Turf.js 7.4.0 (MIT), jsPDF 2.5.2, fflate 0.8.2 — MIT</li><li>@tmcw/togeojson 7.1.3 — BSD-2-Clause</li><li>PDF.js 3.11.174 — Apache-2.0</li><li>Simbol titik: Material Design Icons (Google) — Apache-2.0</li><li>Data peta © OpenStreetMap contributors — ODbL; tile OSM tunduk pada Tile Usage Policy OSMF</li><li>Google Apps Script, Sheets, Drive — Ketentuan Layanan Google</li></ul><p class="small muted">Ikon & logo bawaan dibuat khusus untuk aplikasi ini.</p></div></div>' +
       '<div class="card legal" style="margin-top:12px">' + LEGAL.terms + '</div><div class="card legal" style="margin-top:12px">' + LEGAL.privacy + '</div>';
     var ic = $('#ab-inst-chk'); if (ic) ic.onclick = Install.help; Install.refresh();
-    $('#ab-health').onclick = async function () { try { var h = await Api.call('health'); $('#ab-h').textContent = JSON.stringify(h); $('#ab-sv').textContent = h.version + ' (' + h.build + ')'; } catch (e) { $('#ab-h').textContent = 'Gagal: ' + e.message; } };
+    $('#ab-health').onclick = async function () {
+      try {
+        var h = await Api.call('health'), info = null;
+        try { info = await Api.call('db.info'); } catch (e2) { info = h.db; }
+        if (S.serverApp) S.serverApp.db = info || h.db;
+        $('#ab-db').innerHTML = dbLabel(info || h.db);
+        $('#ab-sv').textContent = h.version + ' (' + h.build + ')';
+        $('#ab-h').textContent = (h.db && h.db.ok ? '✓ Server & database OK' : '✗ Database bermasalah: ' + ((h.db && h.db.message) || '-')) + ' · ' + h.time;
+      } catch (e) { $('#ab-h').textContent = 'Gagal: ' + e.message; }
+    };
     var rs = $('#ab-reset'); if (rs) rs.onclick = async function () { if (!(await confirmBox('Reset demo', 'Semua data demo di tab ini dihapus dan dibuat ulang.', 'Reset', true))) return; await IDB.clear('ops').catch(function () { }); await IDB.clear('kv').catch(function () { }); Demo.reset(); location.reload(); };
   }
 };
@@ -3023,7 +3048,7 @@ function bindGlobal() {
     $('#lg-api-save').onclick = async function () {
       var u = $('#lg-api').value.trim(); if (!PMT.okUrl(u)) return ($('#lg-api-msg').textContent = 'URL harus HTTPS (contoh: https://script.google.com/macros/s/…/exec).');
       LS.set('umg_api_url', u); $('#lg-api-msg').textContent = 'Menguji…';
-      try { var h = await Api.call('health'); $('#lg-api-msg').textContent = 'Terhubung: ' + h.app + ' v' + h.version + ' · DB ' + (h.db.ok ? 'OK' : 'bermasalah'); Brand.refresh(); } catch (e) { $('#lg-api-msg').textContent = 'Gagal: ' + e.message; }
+      try { var h = await Api.call('health'); $('#lg-api-msg').textContent = 'Terhubung: ' + h.app + ' v' + h.version + ' · DB ' + (h.db && h.db.backend === 'supabase' ? 'Supabase' : 'Google Sheets') + ' ' + (h.db.ok ? 'OK' : 'bermasalah'); Brand.refresh(); } catch (e) { $('#lg-api-msg').textContent = 'Gagal: ' + e.message; }
     };
   }
   if (CONFIG.MODE === 'demo') $('#lg-demo').classList.remove('hidden');
