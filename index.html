@@ -689,7 +689,7 @@ var I18N_EN = {
   // ---- formulir & detail
   'Data baru': 'New record', 'Edit data': 'Edit record', 'Simpan draft': 'Save draft', 'Simpan & ajukan': 'Save & submit', 'Gambar ulang': 'Redraw',
   '+ Ambil / pilih foto': '+ Take / choose photo', 'Belum ada foto.': 'No photos yet.', 'Digitasi manual': 'Manual digitizing', 'Digitasi manual di peta': 'Digitized manually on the map',
-  'Tabel tanpa geometri': 'Table without geometry', 'Layer ini belum memiliki atribut.': 'This layer has no attributes yet.', 'Koordinat': 'Coordinates', 'Sumber posisi': 'Position source',
+  'Tabel tanpa geometri': 'Table without geometry', 'Layer ini belum memiliki atribut.': 'This layer has no attributes yet.', 'Koordinat': 'Coordinates', 'Sumber posisi': 'Position source', 'GPS + digitasi': 'GPS + digitized',
   'Dibuat': 'Created', 'Diubah': 'Modified', 'Catatan review': 'Review note', 'Luas': 'Area', 'Keliling': 'Perimeter', 'Panjang': 'Length',
   'Klik foto untuk memperbesar (scroll / pinch untuk zoom)': 'Click a photo to enlarge (scroll / pinch to zoom)', 'Catatan reviewer:': 'Reviewer note:',
   '+ Tambah': '+ Add', 'Belum ada data terkait.': 'No related records yet.', 'Belum dipilih.': 'Not selected.', 'Cari ID / nama data induk…': 'Search parent ID / name…',
@@ -917,6 +917,11 @@ var I18N_EN = {
 
 /** Pola untuk teks dinamis (angka, nama). Urutan penting: yang lebih spesifik di atas. */
 var I18N_EN_PATTERNS = [
+  [/^Arah kompas HP berbeda (\d+)° dari arah gerak GPS\. Panah sementara memakai arah gerak\. Kalibrasi kompas: gerakkan HP membentuk angka 8 beberapa kali, jauhi logam\/motor\.$/, 'The phone compass differs $1° from the GPS direction of travel. The arrow temporarily uses the direction of travel. Calibrate the compass: move the phone in a figure-8 a few times, away from metal/vehicles.'],
+  [/^Rekam jejak GPS perangkat — (\d+) vertex dari GPS(, akurasi median (±[\d.,]+ m))?$/, function (_, n, x, a) { return 'Device GPS track — ' + n + ' vertices from GPS' + (a ? ', median accuracy ' + a : ''); }],
+  [/^Campuran — (\d+) vertex dari GPS( \(akurasi median (±[\d.,]+ m)\))?, sisanya digitasi manual di peta$/, function (_, n, x, a) { return 'Mixed — ' + n + ' vertices from GPS' + (a ? ' (median accuracy ' + a + ')' : '') + ', the rest digitized on the map'; }],
+  [/^Rekam jejak GPS( ±[\d.,]+ m)?$/, 'GPS track$1'],
+  [/^GPS perangkat, akurasi dilaporkan (±[\d.,]+ m) \((\d+) sampel(, dirata-rata)?\)$/, function (_, a, n, avg) { return 'Device GPS, reported accuracy ' + a + ' (' + n + ' sample' + (n === '1' ? '' : 's') + (avg ? ', averaged' : '') + ')'; }],
   [/^Tenant: (.+) · paket (.+) · (\S+)( · kunci …\w+)?$/, function (_, a, b, c, d) { return 'Tenant: ' + a + ' · plan ' + b + ' · ' + c + (d ? d.replace('kunci', 'key') : ''); }],
   [/^✗ Database bermasalah: (.*)$/, '✗ Database problem: $1'],
   [/^Terhubung: (.+) v(\S+) · DB (Supabase|Google Sheets) (OK|bermasalah)$/, function (_, a, v, d, o) { return 'Connected: ' + a + ' v' + v + ' · DB ' + d + ' ' + (o === 'OK' ? 'OK' : 'problem'); }],
@@ -1022,7 +1027,15 @@ var LEGAL_EN = {
  * Mode: 'gas' (HtmlService/google.script.run), 'remote' (PWA GitHub Pages -> fetch Web App), 'demo' (backend emulasi di browser).
  */
 'use strict';
-var APP_VERSION = '1.10.2', APP_BUILD = '2026-11-17';
+var APP_VERSION = '1.10.3', APP_BUILD = '2026-11-18';
+/** Keterangan sumber posisi fitur: GPS titik, rekam jejak GPS, campuran, atau digitasi manual. */
+function posSource(f, short) {
+  var g = f.gps || {}, n = g.samples || 0, acc = g.accuracy ? '±' + fmtNum(g.accuracy, 1) + ' m' : '';
+  if (g.source === 'track') return short ? 'Rekam jejak GPS' + (acc ? ' ' + acc : '') : 'Rekam jejak GPS perangkat — ' + n + ' vertex dari GPS' + (acc ? ', akurasi median ' + acc : '');
+  if (g.source === 'mixed') return short ? 'GPS + digitasi' : 'Campuran — ' + n + ' vertex dari GPS' + (acc ? ' (akurasi median ' + acc + ')' : '') + ', sisanya digitasi manual di peta';
+  if (g.accuracy) return short ? 'GPS ' + acc + ' · ' + (n || 1) + ' sampel' : 'GPS perangkat, akurasi dilaporkan ' + acc + ' (' + (n || 1) + ' sampel' + (g.source === 'device-avg' ? ', dirata-rata' : '') + ')';
+  return short ? 'Digitasi manual' : 'Digitasi manual di peta';
+}
 /** Label database untuk layar Tentang: Google Sheets / Supabase (+ project & tenant untuk admin). */
 function dbLabel(d) {
   if (CONFIG.MODE === 'demo') return 'Penyimpanan browser (demo)';
@@ -1499,7 +1512,7 @@ var GPS = {
     GPS.watch = navigator.geolocation.watchPosition(function (p) {
       GPS.pos = { lon: p.coords.longitude, lat: p.coords.latitude, acc: p.coords.accuracy, alt: p.coords.altitude, ts: p.timestamp };
       // arah gerak dari GPS (course) dipakai bila kompas tidak tersedia & perangkat bergerak
-      if (p.coords.heading !== null && isFinite(p.coords.heading) && (p.coords.speed || 0) > 0.7) { GPS.course = p.coords.heading; GPS.courseTs = Date.now(); }
+      if (p.coords.heading !== null && isFinite(p.coords.heading) && (p.coords.speed || 0) > 0.7) { GPS.course = p.coords.heading; GPS.courseTs = Date.now(); GPS.checkCompass(p.coords); }
       GPS.err = ''; GPS.chip(); MapView.drawGps();
       if (GPS.follow && MapView.map) MapView.map.easeTo({ center: [GPS.pos.lon, GPS.pos.lat], duration: 400 });
       if (GPS.track && !GPS.trackPaused && Draw.mode && Draw.mode !== 'Point' && Draw.mode !== 'measure') GPS.trackPoint();
@@ -1546,8 +1559,22 @@ var GPS = {
     var now = Date.now();
     if ((GPS._hd === undefined || Math.abs(((GPS.heading - GPS._hd + 540) % 360) - 180) >= 2) && (!GPS._hdT || now - GPS._hdT > 100)) { GPS._hd = GPS.heading; GPS._hdT = now; MapView.drawGps(); }
   },
-  /** Arah yang ditampilkan: kompas (bila aktif < 3 dtk) atau arah gerak GPS (< 10 dtk). */
+  /**
+   * Bandingkan kompas dengan arah gerak GPS saat berjalan lurus. Kompas HP (magnetometer) sering meleset
+   * sampai dikalibrasi atau setelah dekat logam/motor; bila selisih > 45° beberapa kali berturut-turut,
+   * panah memakai arah gerak GPS dan pengguna diminta mengkalibrasi kompas.
+   */
+  checkCompass: function (c) {
+    if (GPS.heading === null || Date.now() - (GPS.headingTs || 0) > 3000 || (c.speed || 0) < 1 || (c.accuracy || 99) > 20) return;
+    var d = Math.abs(((GPS.heading - c.heading + 540) % 360) - 180);
+    GPS._mis = Math.max(0, Math.min(8, (GPS._mis || 0) + (d > 45 ? 1 : d < 25 ? -1 : 0)));
+    var bad = GPS._mis >= 4 ? true : GPS._mis === 0 ? false : !!GPS.cmpBad;
+    if (bad && !GPS.cmpBad && !GPS._cmpWarned) { GPS._cmpWarned = true; toast('Arah kompas HP berbeda ' + Math.round(d) + '° dari arah gerak GPS. Panah sementara memakai arah gerak. Kalibrasi kompas: gerakkan HP membentuk angka 8 beberapa kali, jauhi logam/motor.', '', 9000); }
+    GPS.cmpBad = bad;
+  },
+  /** Arah yang ditampilkan: kompas (bila aktif < 3 dtk & tidak meleset) atau arah gerak GPS (< 10 dtk). */
   dir: function () {
+    if (GPS.cmpBad && GPS.course !== null && Date.now() - GPS.courseTs < 10000) return GPS.course;
     if (GPS.heading !== null && Date.now() - (GPS.headingTs || 0) < 3000) return GPS.heading;
     if (GPS.course !== null && Date.now() - GPS.courseTs < 10000) return GPS.course;
     return null;
@@ -1574,7 +1601,7 @@ var GPS = {
       dot.className = 'dot ' + (stale || acc > 15 ? (acc > 30 || stale ? 'off' : 'warn') : '');
       var u = Geo.toUTM(GPS.pos.lon, GPS.pos.lat);
       var hd = GPS.dir();
-      lbl.textContent = '±' + fmtNum(acc, 1) + ' m · ' + (stale ? 'posisi lama ' + a + ' dtk' : a + ' dtk') + (hd !== null ? ' · ' + Math.round(hd) + '° ' + GPS.compassName(hd) : '') + ' · ' + GPS.pos.lat.toFixed(6) + ', ' + GPS.pos.lon.toFixed(6) + ' · UTM ' + u.zone + u.hemi + ' X ' + Math.round(u.easting) + ' Y ' + Math.round(u.northing);
+      lbl.textContent = '±' + fmtNum(acc, 1) + ' m · ' + (stale ? 'posisi lama ' + a + ' dtk' : a + ' dtk') + (hd !== null ? ' · ' + Math.round(hd) + '° ' + GPS.compassName(hd) + (GPS.cmpBad || GPS.heading === null || Date.now() - (GPS.headingTs || 0) >= 3000 ? ' (arah gerak)' : '') : '') + ' · ' + GPS.pos.lat.toFixed(6) + ', ' + GPS.pos.lon.toFixed(6) + ' · UTM ' + u.zone + u.hemi + ' X ' + Math.round(u.easting) + ' Y ' + Math.round(u.northing);
     }
     var b = $('#btn-gps'); if (b) b.classList.toggle('on', GPS.watch !== null);
   },
@@ -2061,7 +2088,7 @@ var Draw = {
       Draw.layer = l;
     }
     Draw.cancel(true, false, true);
-    Draw.mode = mode; Draw.target = opt.featureId || null; Draw.coords = (opt.coords || []).slice(); Draw.sidePoints = opt.sidePoints || 0; Draw._grp = Draw.coords.map(function () { return 1; }); Cons.reset();
+    Draw.mode = mode; Draw.target = opt.featureId || null; Draw.coords = (opt.coords || []).slice(); Draw.src = (opt.src && opt.src.length === Draw.coords.length) ? opt.src.slice() : Draw.coords.map(function () { return null; }); Draw.sidePoints = opt.sidePoints || 0; Draw._grp = Draw.coords.map(function () { return 1; }); Cons.reset();
     Draw._hist = Hist.push(Draw.onBack, 'draw');
     $$('[data-tool]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tool') === mode); });
     if (MapView.map) MapView.map.getCanvas().style.cursor = 'crosshair';
@@ -2083,14 +2110,14 @@ var Draw = {
   add: function (p, fromGps) {
     if (!Draw.mode) return;
     if (Draw.mode === 'Point') { Draw.coords = [p]; Draw.render(); Draw.finish(fromGps ? { accuracy: GPS.pos && GPS.pos.acc, altitude: GPS.pos && GPS.pos.alt, timestamp: new Date().toISOString(), source: 'device', samples: 1 } : null); return; }
-    Draw.coords.push(p); (Draw._grp = Draw._grp || []).push(1); Draw.render(); Draw.panel(); Draw.save();
+    Draw.coords.push(p); (Draw.src = Draw.src || []).push(fromGps ? Math.round(((GPS.pos && GPS.pos.acc) || 0) * 10) / 10 : null); (Draw._grp = Draw._grp || []).push(1); Draw.render(); Draw.panel(); Draw.save();
   },
   /** Tambah beberapa vertex sekaligus (trace / busur) — Undo membatalkan satu kelompok. */
   addMany: function (pts) {
     if (!Draw.mode || !pts || !pts.length) { if (Draw.mode) Draw.panel(); return; }
-    pts.forEach(function (p) { Draw.coords.push(p); }); (Draw._grp = Draw._grp || []).push(pts.length); Draw.render(); Draw.panel(); Draw.save();
+    pts.forEach(function (p) { Draw.coords.push(p); (Draw.src = Draw.src || []).push(null); }); (Draw._grp = Draw._grp || []).push(pts.length); Draw.render(); Draw.panel(); Draw.save();
   },
-  undo: function () { var n = (Draw._grp && Draw._grp.length) ? Draw._grp.pop() : 1; n = Math.min(n, Draw.coords.length); Draw.coords.splice(Math.max(0, Draw.coords.length - n), n); Cons.reset(); Draw.render(); Draw.panel(); Draw.save(); },
+  undo: function () { var n = (Draw._grp && Draw._grp.length) ? Draw._grp.pop() : 1; n = Math.min(n, Draw.coords.length); Draw.coords.splice(Math.max(0, Draw.coords.length - n), n); if (Draw.src) Draw.src.splice(Math.max(0, Draw.src.length - n), n); Cons.reset(); Draw.render(); Draw.panel(); Draw.save(); },
   // ---- status rekam jejak: off | on | paused ----
   trackState: function () { return !GPS.track ? 'off' : (GPS.trackPaused ? 'paused' : 'on'); },
   setTrack: function (st) {
@@ -2141,7 +2168,7 @@ var Draw = {
   save: function () {
     if (!S.user) return;
     if (!Draw.mode || Draw.mode === 'measure' || Draw.mode === 'Point' || !Draw.coords.length) { LS.set(Draw.key(), null); return; }
-    LS.set(Draw.key(), JSON.stringify({ mode: Draw.mode, layerId: Draw.layer.id, target: Draw.target, coords: Draw.coords, track: Draw.trackState(), sidePoints: Draw.sidePoints, ts: new Date().toISOString() }));
+    LS.set(Draw.key(), JSON.stringify({ mode: Draw.mode, layerId: Draw.layer.id, target: Draw.target, coords: Draw.coords, src: Draw.src, track: Draw.trackState(), sidePoints: Draw.sidePoints, ts: new Date().toISOString() }));
   },
   restore: async function () {
     var d; try { d = JSON.parse(LS.get(Draw.key()) || 'null'); } catch (e) { d = null; }
@@ -2151,7 +2178,7 @@ var Draw = {
     var ok = await confirmBox('Lanjutkan rekaman?', 'Ada rekaman ' + ({ LineString: 'garis', Polygon: 'poligon' }[d.mode]) + ' "' + l.name + '" yang belum selesai (' + d.coords.length + ' vertex, ' + fmtDate(d.ts) + ').', 'Lanjutkan');
     if (!ok) { if (await confirmBox('Buang rekaman?', 'Rekaman ' + d.coords.length + ' vertex akan dihapus permanen.', 'Buang', true)) LS.set(Draw.key(), null); return; }
     if (l.project_id !== S.projectId) { S.projectId = l.project_id; MapView.refreshData(); }
-    Draw.start(d.mode, { layerId: l.id, featureId: d.target, coords: d.coords, sidePoints: d.sidePoints });
+    Draw.start(d.mode, { layerId: l.id, featureId: d.target, coords: d.coords, src: d.src, sidePoints: d.sidePoints });
     if (d.track !== 'off') Draw.setTrack('paused');
     toast('Rekaman dipulihkan' + (d.track !== 'off' ? ' — rekam jejak dijeda, tekan Lanjutkan.' : '.'), 'ok', 4000);
   },
@@ -2204,22 +2231,30 @@ var Draw = {
     if (Draw.mode && Draw.mode !== 'measure' && Draw.coords.length >= 2 && !(await confirmBox('Batalkan rekaman?', Draw.coords.length + ' vertex akan dibuang.', 'Buang', true))) return;
     Draw.cancel();
   },
+  /** Ringkasan sumber posisi garis/poligon: berapa vertex dari GPS (rekam jejak / + Vertex GPS) vs digitasi. */
+  gpsMeta: function () {
+    var src = (Draw.src || []).slice(0, Draw.coords.length), acc = src.filter(function (a) { return a !== null && a !== undefined; });
+    if (!acc.length) return null;
+    var sorted = acc.slice().sort(function (x, y) { return x - y; }), med = sorted[Math.floor(sorted.length / 2)];
+    return { source: acc.length === Draw.coords.length ? 'track' : 'mixed', samples: acc.length, accuracy: med || null, altitude: null, timestamp: new Date().toISOString() };
+  },
   finish: function (gpsMeta) {
     var g = Draw.geometry();
     if (!g) return toast('Geometri belum lengkap.', 'err');
     var v = Geo.validate(g, Draw.layer.geom_type);
     if (!v.ok) return toast(v.errors.join(' '), 'err', 6000);
-    var layer = Draw.layer, target = Draw.target, saved = { mode: Draw.mode, layerId: layer.id, target: target, coords: Draw.coords.slice(), sidePoints: Draw.sidePoints };
+    var layer = Draw.layer, target = Draw.target, saved = { mode: Draw.mode, layerId: layer.id, target: target, coords: Draw.coords.slice(), src: (Draw.src || []).slice(), sidePoints: Draw.sidePoints };
+    if (!gpsMeta && Draw.mode !== 'Point') gpsMeta = Draw.gpsMeta();
     Draw.cancel(false, false, true);
     // Bila formulir dibatalkan, rekaman dikembalikan (tidak hilang).
-    var back = function (ok) { if (!ok && saved.mode !== 'Point') { Draw.start(saved.mode, { layerId: saved.layerId, featureId: saved.target, coords: saved.coords, sidePoints: saved.sidePoints }); toast('Rekaman dikembalikan — lanjutkan atau tekan Selesai lagi.'); } else LS.set(Draw.key(), null); };
+    var back = function (ok) { if (!ok && saved.mode !== 'Point') { Draw.start(saved.mode, { layerId: saved.layerId, featureId: saved.target, coords: saved.coords, src: saved.src, sidePoints: saved.sidePoints }); toast('Rekaman dikembalikan — lanjutkan atau tekan Selesai lagi.'); } else LS.set(Draw.key(), null); };
     if (target) { var f = S.features.get(target); FeatureForm.open(Object.assign({}, f, { geometry: g, gps: gpsMeta || f.gps }), { onDone: back }); }
     else FeatureForm.open({ id: uuid(), layer_id: layer.id, project_id: layer.project_id, geometry: g, attrs: {}, photos: [], gps: gpsMeta || null, status: 'draft', version: 0, _new: true }, { onDone: back });
   },
   cancel: function (silent, fromBack, keepDraft) {
     if (typeof Cons !== 'undefined') Cons.reset();
     if (!fromBack && Draw._hist) { var h = Draw._hist; Draw._hist = null; Hist.release(h); }
-    Draw.mode = null; Draw.coords = []; Draw.target = null; GPS.track = false; GPS.trackPaused = false;
+    Draw.mode = null; Draw.coords = []; Draw.src = []; Draw.target = null; GPS.track = false; GPS.trackPaused = false;
     if (!keepDraft && S.user) LS.set(Draw.key(), null);
     $$('[data-tool]').forEach(function (b) { b.classList.remove('on'); });
     $('[data-tab=map]').classList.remove('drawing');
@@ -2265,7 +2300,7 @@ var FeatureForm = {
       var t = fd.type === 'number' || fd.type === 'integer' ? 'number' : (fd.type === 'date' ? 'date' : 'text');
       return '<label class="f">' + esc(fd.label) + req + '<input class="input" id="' + id + '" type="' + t + '"' + (fd.type === 'integer' ? ' step="1"' : (fd.type === 'number' ? ' step="any"' : '')) + ' value="' + esc(v) + '" maxlength="5000"></label>';
     }).join('');
-    var gpsInfo = f.gps && f.gps.accuracy ? '<span class="badge">GPS ±' + fmtNum(f.gps.accuracy, 1) + ' m · ' + (f.gps.samples || 1) + ' sampel</span>' : '<span class="badge">Digitasi manual</span>';
+    var gpsInfo = '<span class="badge">' + posSource(f, true) + '</span>';
     var body = document.createElement('div'); body.className = 'col';
     if (!f.geometry) gpsInfo = '<span class="badge">Tabel tanpa geometri</span>';
     body.innerHTML = '<div class="row wrap small"><span class="badge">' + esc(l.name) + '</span>' + gpsInfo + (mt.area_ha ? '<span class="badge">' + fmtNum(mt.area_ha, 4) + ' ha</span>' : '') + (mt.length_m ? '<span class="badge">' + fmtNum(mt.length_m, 1) + ' m</span>' : '') + (f.geometry && f.geometry.type === 'Point' ? '<span class="badge mono">' + f.geometry.coordinates[1].toFixed(7) + ', ' + f.geometry.coordinates[0].toFixed(7) + '</span>' : '') + '</div>' +
@@ -2356,7 +2391,7 @@ var Detail = {
       (mt.area_m2 ? '<tr><th>Luas</th><td>' + fmtNum(mt.area_m2, 1) + ' m² · ' + fmtNum(mt.area_ha, 4) + ' ha</td></tr><tr><th>Keliling</th><td>' + fmtNum(mt.perimeter_m, 1) + ' m</td></tr>' : '') +
       (mt.length_m ? '<tr><th>Panjang</th><td>' + fmtNum(mt.length_m, 1) + ' m</td></tr>' : '') +
       (f.geometry && f.geometry.type === 'Point' ? '<tr><th>Koordinat</th><td class="mono">' + f.geometry.coordinates[1].toFixed(7) + ', ' + f.geometry.coordinates[0].toFixed(7) + '<br>' + (function () { var u = Geo.toUTM(f.geometry.coordinates[0], f.geometry.coordinates[1]); return utmText(u); })() + '</td></tr>' : '') +
-      (!f.geometry ? '' : '<tr><th>Sumber posisi</th><td>' + (f.gps && f.gps.accuracy ? 'GPS perangkat, akurasi dilaporkan ±' + fmtNum(f.gps.accuracy, 1) + ' m (' + (f.gps.samples || 1) + ' sampel)' : 'Digitasi manual di peta') + '</td></tr>') +
+      (!f.geometry ? '' : '<tr><th>Sumber posisi</th><td>' + posSource(f) + '</td></tr>') +
       '<tr><th>Dibuat</th><td>' + esc(userName(f.created_by)) + ' · ' + fmtDate(f.created_at) + '</td></tr><tr><th>Diubah</th><td>' + esc(userName(f.updated_by)) + ' · ' + fmtDate(f.updated_at) + '</td></tr>' +
       (f.review_note ? '<tr><th>Catatan review</th><td>' + esc(f.review_note) + ' — ' + esc(userName(f.review_by)) + '</td></tr>' : '') + '</tbody></table></div>' +
       ((f.photos || []).length ? '<div class="thumbs" id="dt-thumbs">' + f.photos.map(function (p, i) { return '<div class="thumb"><img alt="" data-ref="' + esc(p) + '" data-i="' + i + '"></div>'; }).join('') + '</div>' : '') +
